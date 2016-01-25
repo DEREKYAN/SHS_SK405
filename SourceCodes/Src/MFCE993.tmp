@@ -1,0 +1,275 @@
+#include "ADC.h"
+#include "Fuel.h"
+#include "Mobile.h"
+#include "UART.h"
+#include "Events.h"
+#include "PV.h"
+#include "MCU.h"
+#include "radio.h"
+#include "nv.h"
+#include <stdlib.h>
+#include "record.h"
+//
+struct AVG_ADC_Struct get_adc;
+//static u16 vkey;                      // variable value -- button ADC 
+//static u16 avg_imobile = 0;           // variable value -- average mobile current (mA)
+static s16 avg_ibattery;              // signed variable value --> plus when charging curret sub when discharging (mA) 
+
+static u16 avg_vbatt = START_BATTERY_VOLTAGE;     // variable value  -- battery voltage from average value of 4 samples (mV)
+static u16 avg_vbatt_5mS = START_BATTERY_VOLTAGE;  // variable value -- battery voltage from average value of 5 avg_vbatt(mV) 
+//static u16 avg_v_charge;            // Variable value -- average PV charging voltage (mV)
+static u16 i_charge_adc;            // Variable vaule -- charging sensor ADC 
+static u16 V_batt_adc;             // Variable value -- VDD is ref voltage, internal ref voltage ADC value 
+static u16 PV_V_adc;                // Variable value -- PV charging voltage ADC  
+//static u16 i_light_adc;           // Variable value -- light current ADC 
+static u16 i_mobile_adc;          // Variable value -- USB port current ADC
+static u16 Vrefint_mV;            // Variable value -- Vrefint from NV FLASH (mV)
+
+
+static u16 V_VDD = 3300;          // VDD voltage initial Voltage 3300mV (mV)
+static u16 V_Charge = 0;          // PV voltage (mV)                             
+static u16 i_charge = 0;         // Charging current(mA)     
+//static u16 ave_i_charge = 0;     // Average charging current (mA)
+//static u16 i_light = 0;          // Light current (mA) 
+//static u16 ave_i_light = 0;      // Average light current(mA)
+static u16 i_mobile = 0;        //  mobile current (mA)
+bool  ave_ilight_update;          // Flag that light current has been samplied 20 times ( 5mS * 4 samples/mS) 
+
+u16 get_Vrefint_mV(void)                        
+{
+    return Vrefint_mV;
+}
+
+void set_vrefint_mv(u16 vref)     // Read Vref from NV flash and set internal verf value 
+{
+  Vrefint_mV = vref;
+}
+
+/********************************************
+** The function is ADC sample in sleep and hibernation mode     
+********************************************/
+void stop_adc_samples(void)
+{
+  V_batt_adc = Sample_ADC(VREFINT);
+  i_charge_adc = Sample_ADC(ICHRG);
+  PV_V_adc = Sample_ADC(VCHRG);
+  i_mobile_adc = Sample_ADC(IMOBILE);  
+  
+  V_VDD = (4095 * Vrefint_mV +  V_batt_adc/2)/V_batt_adc;     // Formula is the same with active modeule
+  get_adc.V_Charge = (V_VDD * 17 * PV_V_adc + 4095)/ ( 4095*2);
+  get_adc.avg_v_charge =  get_adc.V_Charge;
+  
+  avg_vbatt = (i_charge_adc * V_VDD+4095/2)/4095;
+  avg_vbatt_5mS = avg_vbatt;
+  get_adc.avg_imobile = (i_mobile_adc * V_VDD*20 + 4095/2)/4095;   
+  if(get_adc.avg_imobile <20)
+  get_adc.avg_imobile = 0;
+}
+
+/********************************************
+** The function is ADC sample in Active mode     
+********************************************/
+void Run_ADC_Samples(void)
+{
+    uchar x = 0;
+    i_charge_adc = 0;
+    V_batt_adc = 0;
+    PV_V_adc = 0;
+//    i_light_adc = 0;
+    i_mobile_adc = 0;   
+    get_adc.vkey = 0;
+    static uchar ADC_Count = 0;
+//    static u16 sum_5_i_light = 0;
+    static u16 sum_5_i_charge = 0;
+    static u16 sum_5_i_mobile = 0; 
+    static u16 sum_5_v_battery = 0;
+    static uint sum_5_v_charge = 0;
+    
+    
+    for (x = 0; x < (ADC_AVG_SAMPLES); x++) 
+    {
+          V_batt_adc += Sample_ADC(VREFINT); 
+          i_charge_adc += Sample_ADC(ICHRG);
+//          i_light_adc += Sample_ADC(ILIGHT);
+          PV_V_adc += Sample_ADC(VCHRG);
+          i_mobile_adc += Sample_ADC(IMOBILE);
+          get_adc.vkey += Sample_ADC(VKEY);
+    }
+    V_batt_adc = (V_batt_adc + ADC_AVG_SAMPLES/2)/ADC_AVG_SAMPLES;
+    i_charge_adc = (i_charge_adc /*+ ADC_AVG_SAMPLES/2*/)/ADC_AVG_SAMPLES;
+    PV_V_adc = (PV_V_adc + ADC_AVG_SAMPLES/2)/ADC_AVG_SAMPLES;
+//    i_light_adc = (i_light_adc+ADC_AVG_SAMPLES/2)/ADC_AVG_SAMPLES;
+    i_mobile_adc = (i_mobile_adc + ADC_AVG_SAMPLES/2) /ADC_AVG_SAMPLES;
+    get_adc.vkey = (get_adc.vkey + ADC_AVG_SAMPLES/2) /ADC_AVG_SAMPLES;
+
+     V_VDD = (4095 * Vrefint_mV +  V_batt_adc/2)/V_batt_adc;      // VDD =Vref*4095/ADC_vref  (mV)
+     V_Charge = (V_VDD * 17 * PV_V_adc + 4095)/ ( 4095*2);        // Vpv = VDD*ADC_pv/4095 *(75+10)/10 because divider resistor 75K/10K (mV)
+     i_charge = ((4095 - i_charge_adc)*V_VDD * 20 + 4095/2)/4095 ; // Icharge = (ADC_VDD-ADC_Vcharge)*VDD/(4095*0.05)  (mA)
+//     i_light =  (i_light_adc * V_VDD*20 + 4095 * 3/2)/(4095 * 3);   // I_light = ADC_light*VDD/4095/0.15  (mA)
+ 
+     i_mobile = (i_mobile_adc * V_VDD*20 + 4095/2)/4095;       // I_mobile = ADC_mobile*VDD/4095/0.05 (mA)
+     avg_vbatt = (i_charge_adc * V_VDD+4095/2)/4095;           // Vbat = ADC_charge*VDD/4095  
+     
+//     sum_5_i_light += i_light;
+     sum_5_i_charge += i_charge;
+     sum_5_i_mobile += i_mobile;
+     sum_5_v_battery += avg_vbatt;
+     sum_5_v_charge += V_Charge;
+     ++ADC_Count;
+     if(ADC_Count >= I_AVG_SAMPLE)
+     {
+//        ave_i_light = (sum_5_i_light + I_AVG_SAMPLE/2)/I_AVG_SAMPLE;
+        get_adc.ave_i_charge = (sum_5_i_charge + I_AVG_SAMPLE/2)/I_AVG_SAMPLE;
+        get_adc.avg_imobile = (sum_5_i_mobile + I_AVG_SAMPLE/2)/I_AVG_SAMPLE;
+        avg_vbatt_5mS = (sum_5_v_battery + I_AVG_SAMPLE/2)/I_AVG_SAMPLE; 
+        get_adc.avg_v_charge = (sum_5_v_charge + I_AVG_SAMPLE/2)/I_AVG_SAMPLE; 
+    
+        if((get_adc.ave_i_charge > uart_nvram.nvram.unv_max_rate) && (get_user_set_flag() == CONST_NV_USED))
+        {
+            uart_nvram.nvram.unv_max_rate =  get_adc.ave_i_charge;            // Save the maximum charging current
+        }
+ 
+        if(get_adc.avg_imobile <MOBILE_MINIMUM_CURRENT)            // Clear little mobile current because of VDD noise 
+          get_adc.avg_imobile = 0;
+ /*       
+        if(ave_i_light <MIMIMUM_LIGHT_CURRENT)                             // Clear little light current because of light noise 
+          ave_i_light = 0;
+        else
+          ave_i_light +=9;                     // ADC offset 9mA
+*/        
+        if(get_adc.avg_v_charge < 100)                // PV charging voltage is lower than 100mV, it maybe come from noise             
+          get_adc.avg_v_charge = 0;  
+
+        if((get_adc.ave_i_charge <5) || (get_adc.avg_v_charge<2500))    // Minimum charging current: 5mA, Minimum charging voltage: 2500mV
+          get_adc.ave_i_charge = 0;             
+     
+         if(get_adc.ave_i_charge != 0)
+        {
+            get_adc.ave_i_charge +=CHARG_CURRENT_OFFSET_MA;     // If charging current is higher than minimum charging current, add offset becasue ADC offset 
+        }     
+        
+        avg_ibattery = get_adc.ave_i_charge - get_adc.avg_imobile /* - ave_i_light*/;      // Count battery current, charging current is plus and discharging is minus
+       
+        ADC_Count = 0;
+ //       sum_5_i_light = 0;
+        sum_5_i_charge = 0;
+        sum_5_i_mobile = 0;
+        sum_5_v_battery = 0;
+        sum_5_v_charge = 0;
+//        ave_ilight_update = TRUE;       // Average light current is updated. This Flag for light PID control
+        {
+            static uchar flag_boot = 0;
+            u16 boot_type;
+            if(flag_boot == 0)
+            {
+              
+              flag_boot = 1;
+              if(get_user_set_flag() == CONST_NV_USED)
+              {   
+                if(((RCC->CSR) & (RCC_CSR_IWDGRSTF | RCC_CSR_WWDGRSTF)) != 0)
+                {
+                    boot_type = TYPE_WATCHDOG_RESET;              // Watchdog reset 
+                }
+                else if(((RCC->CSR) & RCC_CSR_SFTRSTF) != 0)
+                {      
+                    boot_type =  TYPE_SOFTWARE_RESET;
+                }
+                else if(avg_vbatt_5mS >2700)
+                {
+                    boot_type = TYPE_POWER_ON_RESET;              // Watchdog reset
+                }
+                else 
+                {
+                    boot_type = TYPE_LOW_VOL_RESET;              // Watchdog reset
+                }
+
+                handler_reboot_counter(boot_type);
+                
+                RCC_ClearFlag();
+                //              avg_vbatt_5mS
+              }
+            }
+        }
+
+     }
+}
+
+/*****************************************************************
+**** Battery current abs value for fuel gauge
+**** return signed battery current 
+*****************************************************************/
+s16 Get_battery_current(void)
+{
+  return avg_ibattery; 
+}
+
+/*****************************************************************
+**** Battery current abs value for UART output
+**** return unsigned battery current 
+*****************************************************************/
+u16 get_battery_i_abs(void)
+{
+  u16 i_bat_abs;
+  i_bat_abs = abs(avg_ibattery);
+  return i_bat_abs;
+}
+
+/*****************************************************************
+**** Battery current sign
+**** return + during charging and return - during - 
+*****************************************************************/
+uchar get_bat_in_out(void)
+{
+  uchar IO_char;
+  if(avg_ibattery>0)
+  {
+    IO_char = '+';
+  }
+  else if(avg_ibattery==0)
+  {
+    IO_char = ' ';
+  }
+  else
+  {
+    IO_char = '-';
+  }
+  return IO_char;
+}
+
+// This function returns the locally stored ADC value. It does not cause the ADC to run.
+// Called from throughout the software
+u16 Get_ADC(uchar value) {
+  switch (value)
+  {
+      
+ //   case VKEY:
+ //     return vkey;
+ //   case ICHRG:
+ //    return ave_i_charge;
+ //   case IMOBILE:
+ //     return avg_imobile;
+//    case AVG_IMOBILE:
+//      return avg_imobile;
+//    case ILIGHT:
+//      return i_light;                   // have updated -- derek
+//    case AVG_ILIGHT:
+//      return ave_i_light;    
+//    case AVG_VC:
+//    return avg_v_charge;
+      default:
+      return 0;
+  }
+}
+/*****************************************************************
+**** ADC convert function 
+**** input: ADC channel
+**** Output: ADC value
+*****************************************************************/
+uint Sample_ADC(uint channel) {
+  ADC1->ISR = ADC_FLAG_EOC;
+  ADC1->CHSELR = channel;
+  ADC1->CR |= ADC_CR_ADSTART;
+  while ((ADC1->ISR & ADC_FLAG_EOC)== 0);
+  return ADC1->DR;
+}
+// EOF

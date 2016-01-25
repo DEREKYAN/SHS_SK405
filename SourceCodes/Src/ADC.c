@@ -252,9 +252,15 @@ void Run_ADC_Samples(void)
           adc_ave.ave_i_load= ave_i;
           if(adc_ave.ave_i_load > (-MIN_CURRENT))
             adc_ave.ave_i_load = 0;
+          else
+            adc_ave.ave_i_load -= 10;
+          
           adc_ave.ave_i_charging = adc_ave.ave_i_battery - adc_ave.ave_i_load;
           if(adc_ave.ave_i_charging < MIN_CURRENT)
             adc_ave.ave_i_charging = 0;
+          else
+            adc_ave.ave_i_charging += 10;
+           
           adc_ave.flag_disable_PV = 0;
           Handler_PV_Port();
        }

@@ -58,9 +58,16 @@ static uint8_t get_cable_time(uint32_t t)
 static uint8_t get_cable_type_fuel(uint16_t f)
 {
     uint8_t r;
-    if(f>4000)
-       f = 4000;
-    r = (255 * f)/4000;
+ #ifdef  SINGLE   
+    if(f>6000)
+       f = 6000;
+    r = (255 * f)/6000;
+#endif
+#ifdef  BOUBLE
+    if(f>12000)
+       f = 12000;
+    r = (255 * f)/12000;
+#endif    
     return r;
 }
 

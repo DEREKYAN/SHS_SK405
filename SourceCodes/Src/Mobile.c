@@ -82,11 +82,9 @@ bool Is_Mobile_Idle(void)
 // This function handles the 5V state machine
 // Called by main
 void Handle_Mobile(void) {
-/*  
-  _Port_5V_On();        // add for test 
-  return;
-*/  
+
   static u16 fault_reset_timer = 0;
+  static uchar mobile_V_short_time = 0;
     switch (Mobile_State) {
       case MOBILE_OFF:
         if ((get_system_idle_time() < CONST_3DAY) && !Is_Low_Fuel() && !Is_Empty_Fuel() && (CREDIT_DISABLE != get_credit_status())) {
@@ -107,13 +105,26 @@ void Handle_Mobile(void) {
         break;
       case MOBILE_ON:
         if (adc_ave.ave_v_USBfb < MOBILE_SHORT_THRESHOLD) {                               // test for short
-          _Port_5V_Off();							// disable mosfet to 5V regulators
-          Mobile_State = MOBILE_FAULT;						// set mobile state to fault
-          Send_Message("\n5V_F");					        //4
+          {
+   
+            ++mobile_V_short_time;
+            if(mobile_V_short_time>5)
+            {  
+              mobile_V_short_time = 0;
+              _Port_5V_Off();							// disable mosfet to 5V regulators
+              Mobile_State = MOBILE_FAULT;						// set mobile state to fault
+              Send_Message("\n5V_F");					        //4
 //          Send_Message("\n");			
-          inc_usi_counter(&uart_nvram.nvram.unv_USB_ocp);
-          fault_reset_timer = 0;
-        } else if (Is_Low_Fuel() || Is_Empty_Fuel() || (CREDIT_DISABLE == get_credit_status())) {	                                // if low or empty fuel, or time out has been reached
+              inc_usi_counter(&uart_nvram.nvram.unv_USB_ocp);
+              fault_reset_timer = 0;
+            }
+          }
+        } 
+        else
+        {
+            mobile_V_short_time = 0;
+        }
+          if (Is_Low_Fuel() || Is_Empty_Fuel() || (CREDIT_DISABLE == get_credit_status())) {	                                // if low or empty fuel, or time out has been reached
           Mobile_State = MOBILE_OFF;						// set mobile state to off
           Send_Message("5V_E");
 //          Send_Number(Get_Fuel_Level());
